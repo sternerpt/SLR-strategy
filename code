@@ -1,0 +1,337 @@
+//@version=5
+
+strategy(title='Smoothed Linear Regression Strategy 1TP/Static SL', overlay = true, use_bar_magnifier = true, process_orders_on_close = true, commission_value = 0.065)
+
+//=====================
+//Inputs
+//=====================
+//Zones
+lin_zone_close = input.float(-15, 'Close LinReg (% of zone)', maxval=50)
+
+//Indicator specific
+lin_len = input.int(100, title='LinReg Length', minval = 1, maxval = 5000)
+lin_up_mul = ta.rsi(close, 50)/15 //input.float(2.0, title="Upper Deviation Multiplier", inline = "Upper Deviation Multiplier", group ='LinReg Settings')
+lin_lo_mul = (100-ta.rsi(close, 50))/15 //input.float(2.0, title="Lower Deviation Multiplier", inline = "Lower Deviation Multiplier", group ='LinReg Settings')
+src = close
+//Plotting
+p_lin_close = true
+
+//===================================
+//Linear Regression
+//===================================
+colorUpper = color.new(color.blue, 85)
+colorLower = color.new(color.red, 85)
+
+calcSlope(source, length) =>
+    max_bars_back(source, 5000)
+    if true
+        sumX = 0.0
+        sumY = 0.0
+        sumXSqr = 0.0
+        sumXY = 0.0
+        for i = 0 to length - 1 by 1
+            val = source[i]
+            per = i + 1.0
+            sumX += per
+            sumY += val
+            sumXSqr += per * per
+            sumXY += val * per
+        slope = (length * sumXY - sumX * sumY) / (length * sumXSqr - sumX * sumX)
+        average = sumY / length
+        intercept = average - slope * sumX / length + slope
+        [slope, average, intercept]
+        
+calcDev(source, length, slope, average, intercept) =>
+    upDev = 0.0
+    dnDev = 0.0
+    stdDevAcc = 0.0
+    dsxx = 0.0
+    dsyy = 0.0
+    dsxy = 0.0
+    periods = length - 1
+    daY = intercept + slope * periods / 2
+    val = intercept
+    for j = 0 to periods by 1
+        price = high[j] - val
+        if price > upDev
+            upDev := price
+        price := val - low[j]
+        if price > dnDev
+            dnDev := price
+        price := source[j]
+        dxt = price - average
+        dyt = val - daY
+        price -= val
+        stdDevAcc += price * price
+        dsxx += dxt * dxt
+        dsyy += dyt * dyt
+        dsxy += dxt * dyt
+        val += slope
+    stdDev = math.sqrt(stdDevAcc / (periods == 0 ? 1 : periods))
+    pearsonR = dsxx == 0 or dsyy == 0 ? 0 : dsxy / math.sqrt(dsxx * dsyy)
+    [stdDev, pearsonR, upDev, dnDev]
+
+//Close
+[s, a, i] = calcSlope(close, lin_len)
+endPrice = i
+
+[stdDev, pearsonR, upDev, dnDev] = calcDev(close, lin_len, s, a, i)
+lin_up_close = endPrice + (lin_up_mul * stdDev)
+lin_lo_close = endPrice + (-lin_lo_mul * stdDev)
+lin_close_zone_size = lin_up_close - lin_lo_close
+
+// Smoothing using Simple Moving Average (SMA)
+sma_length = input.int(10, "SMA Length", minval=1)
+smoothed_lin_up_close = ta.sma(lin_up_close, sma_length)
+smoothed_lin_lo_close = ta.sma(lin_lo_close, sma_length)
+
+//Plotting
+light_green = color.rgb(10,200,10,75)
+light_red = color.rgb(255,10,10,75)
+light_yellow = color.rgb(150,150,25,75)
+
+mid_zone = 5
+
+close_lin_high = plot(p_lin_close ? smoothed_lin_up_close : na, title='LinReg Close Upper', color=color.red)
+close_lin_high_zone = plot(p_lin_close ? smoothed_lin_up_close - (lin_zone_close / 100)*lin_close_zone_size : na, title='LinReg Close Zone', color=color.red)
+fill(close_lin_high, close_lin_high_zone, color=light_red)
+
+close_lin_low = plot(p_lin_close ? smoothed_lin_lo_close : na, title='LinReg Close Lower', color=color.green)
+close_lin_low_zone = plot(p_lin_close ? smoothed_lin_lo_close + (lin_zone_close / 100)*lin_close_zone_size : na, title='LinReg Close Zone', color=color.green)
+fill(close_lin_low, close_lin_low_zone, color=light_green)
+
+plot((smoothed_lin_up_close - smoothed_lin_lo_close) / 2 + smoothed_lin_lo_close, color=color.aqua, linewidth=2, title='Mid Line')
+
+upper = p_lin_close ? smoothed_lin_up_close : na
+lower = p_lin_close ? smoothed_lin_lo_close : na
+crossOverUpper = ta.crossover(high, upper)
+crossOverLower = ta.crossunder(low, lower)
+plotshape(crossOverUpper, title='Close Above Upper', style=shape.triangledown, location=location.abovebar, color=color.new(#DC143C, 0), size=size.small, display = display.none)
+plotshape(crossOverLower, title='Close Below Lower', style=shape.triangleup, location=location.belowbar, color=color.new(#228B22, 0), size=size.small, display = display.none)
+
+upperZone = p_lin_close ? smoothed_lin_up_close - (lin_zone_close / 100)*lin_close_zone_size : na
+lowerZone = p_lin_close ? smoothed_lin_lo_close + (lin_zone_close / 100)*lin_close_zone_size : na
+crossOverUpperZone = ta.crossover(high, upperZone)
+crossOverLowerZone = ta.crossunder(low, lowerZone)
+plotshape(crossOverUpperZone, title='Close Above Zone', style=shape.triangledown, location=location.abovebar, color=color.new(#DC143C, 0), size=size.small, display = display.none)
+plotshape(crossOverLowerZone, title='Close Below Zone', style=shape.triangleup, location=location.belowbar, color=color.new(#228B22, 0), size=size.small, display = display.none)
+
+
+candleClosesBelowUpperBand = close < upper
+candleClosesAboveLowerBand = close > lower
+plotshape(crossOverUpper and candleClosesBelowUpperBand, title='Cross Above/Close Below Upper', style=shape.triangledown, location=location.abovebar, color=color.new(#DC143C, 0), size=size.small, display = display.none)
+plotshape(crossOverLower and candleClosesAboveLowerBand, title='Cross Below/Close Above Lower', style=shape.triangleup, location=location.belowbar, color=color.new(#228B22, 0), size=size.small, display = display.none)
+
+candleClosesBelowUpperZone = close < upperZone
+candleClosesAboveLowerZone = close > lowerZone
+plotshape(crossOverUpperZone and candleClosesBelowUpperZone, title='Cross Above/Close Below Upper Zone', style=shape.triangledown, location=location.abovebar, color=color.new(#DC143C, 0), size=size.small, display = display.none)
+plotshape(crossOverLowerZone and candleClosesAboveLowerZone, title='Cross Below/Close Above Lower Zone', style=shape.triangleup, location=location.belowbar, color=color.new(#228B22, 0), size=size.small, display = display.none)
+
+// bullish engulfing
+bullishEngulfing = open[1] > close[1] ? close > open ? close >= open[1] ? close[1] >= open ? close - open > open[1] - close[1] : na : na : na : na
+
+
+// bearish engulfing
+bearishEngulfing = close[1] > open[1] ? open > close ? open >= close[1] ? open[1] >= close ? open - close > close[1] - open[1] : na : na : na : na
+
+
+// ...
+
+htLookBackLong = input.int(0, 'Long ENG Candle Lookback')
+htLookBackShort = input.int(0, 'Short ENG Candle Lookback')
+
+condition1 = bullishEngulfing
+condition2 = crossOverLowerZone
+
+x = false
+
+if condition1 and ta.barssince(condition2) <= htLookBackLong
+    x := true
+
+// Long Short conditions
+longCondition2 = x
+
+condition3 = bearishEngulfing
+condition4 = crossOverUpperZone
+
+y = false
+
+if condition3 and ta.barssince(condition4) <= htLookBackShort
+    y := true
+
+shortCondition2 = y
+
+plotshape(shortCondition2, title='Bearish Engulfing', style=shape.triangledown, location=location.abovebar, color=color.new(#DC143C, 0), size=size.small, display=display.none)
+plotshape(longCondition2, title='Bullish Engulfing', style=shape.triangleup, location=location.belowbar, color=color.new(#228B22, 0), size=size.small, display=display.none)
+
+// ADX
+//░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+adxEnabled = input.bool(defval = false , title = "Average Directional Index (ADX)", tooltip = "", group ="ADX" ) 
+adxlen = input(21, title="ADX Smoothing", group="ADX")
+adxdilen = input(21, title="DI Length", group="ADX")
+adxabove = input(25, title="ADX Threshold", group="ADX")
+
+adxdirmov(len) =>
+	adxup = ta.change(high)
+	adxdown = -ta.change(low)
+	adxplusDM = na(adxup) ? na : (adxup > adxdown and adxup > 0 ? adxup : 0)
+	adxminusDM = na(adxdown) ? na : (adxdown > adxup and adxdown > 0 ? adxdown : 0)
+	adxtruerange = ta.rma(ta.tr, len)
+	adxplus = fixnan(100 * ta.rma(adxplusDM, len) / adxtruerange)
+	adxminus = fixnan(100 * ta.rma(adxminusDM, len) / adxtruerange)
+	[adxplus, adxminus]
+adx(adxdilen, adxlen) =>
+	[adxplus, adxminus] = adxdirmov(adxdilen)
+	adxsum = adxplus + adxminus
+	adx = 100 * ta.rma(math.abs(adxplus - adxminus) / (adxsum == 0 ? 1 : adxsum), adxlen)
+
+adxsig = adxEnabled ? adx(adxdilen, adxlen) : na
+isADXEnabledAndAboveThreshold = adxEnabled ? (adxsig > adxabove) : true
+
+//Session=====================================================================
+fromDay = input.int(defval = 1, title = "From", minval = 1, maxval = 31, inline="1", group='Trade Session')
+fromMonth = input.int(defval = 1, title = "", minval = 1, maxval = 12,inline="1", group='Trade Session')
+fromYear = input.int(defval = 2020, title = "", minval = 1970, inline="1", group='Trade Session')
+toDay = input.int(defval = 31, title = "To", minval = 1, maxval = 31, inline="2", group='Trade Session')
+toMonth = input.int(defval = 12, title = "", minval = 1, maxval = 12, inline="2",group='Trade Session')
+toYear = input.int(defval = 2030, title = "", minval = 2020, inline="2",group='Trade Session')
+
+startDate = timestamp(fromYear, fromMonth, fromDay, 00, 00)
+finishDate = timestamp(toYear, toMonth, toDay, 00, 00)
+date_cond = time >= startDate and time <= finishDate
+
+i_sess = input.session("0000-0000", "Trade time", group='Trade Session')
+UTC_offset = input.int(-5, title='UTC Offset', minval=-10, maxval=13, group='Trade Session')
+UTC_string = 'UTC' + (UTC_offset > 0 ? '+' : '') + (UTC_offset != 0 ? str.tostring(UTC_offset) : '')
+time_cond = time(timeframe.period, i_sess, UTC_string)
+is_trade_mon = input(true, title="Trade Monday?", group='Trade Session')
+is_trade_tue = input(true, title="Trade Tuesday?", group='Trade Session')
+is_trade_wed = input(true, title="Trade Wednesday?", group='Trade Session')
+is_trade_thu = input(true, title="Trade Thursday?", group='Trade Session')
+is_trade_fri = input(true, title="Trade Friday?", group='Trade Session')
+is_trade_sat = input(true, title="Trade Saturday?", group='Trade Session')
+is_trade_sun = input(true, title="Trade Sunday?", group='Trade Session')
+
+day_cond = false
+
+if(dayofweek(time_cond, UTC_string) == dayofweek.monday and is_trade_mon)
+    day_cond := true
+else if(dayofweek(time_cond, UTC_string) == dayofweek.tuesday and is_trade_tue)
+    day_cond := true
+else if(dayofweek(time_cond, UTC_string) == dayofweek.wednesday and is_trade_wed)
+    day_cond := true
+else if(dayofweek(time_cond, UTC_string) == dayofweek.thursday and is_trade_thu)
+    day_cond := true
+else if(dayofweek(time_cond, UTC_string) == dayofweek.friday and is_trade_fri)
+    day_cond := true
+else if(dayofweek(time_cond, UTC_string) == dayofweek.saturday and is_trade_sat)
+    day_cond := true
+else if(dayofweek(time_cond, UTC_string) == dayofweek.sunday and is_trade_sun)
+    day_cond := true
+
+bgcolor(time == time_cond and day_cond ? color.new(color.gray,90) : na)
+
+calcPeriod = time == time_cond and day_cond and date_cond
+
+
+//////////////////////////////////////
+//* Put your strategy rules below *//
+/////////////////////////////////////
+longCondition1 = longCondition2
+shortCondition1 = shortCondition2
+
+
+//define as 0 if do not want to use
+closeLongCondition = 0
+closeShortCondition = 0
+
+
+// Calculate trading conditions
+enterLong = longCondition1
+enterShort = shortCondition1
+
+// trend states
+since_buy = ta.barssince(enterLong)
+since_sell = ta.barssince(enterShort)
+buy_trend = since_sell > since_buy
+sell_trend = since_sell < since_buy
+
+is_signal = enterLong or enterShort
+
+// get the entry price
+entry_price = ta.valuewhen(enterLong or enterShort, src, 0)
+
+
+
+
+// Trade Direction 
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+tradeDirection = input.string('Long and Short', title='Trade Direction', options=['Long and Short', 'Long Only', 'Short Only'], group='Trade Direction')
+
+// Percent as Points
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+per(pcnt) =>
+    strategy.position_size != 0 ? math.round(pcnt / 100 * strategy.position_avg_price / syminfo.mintick) : float(na)
+
+// Take profit 1
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+tp1 = input.float(title='Take Profit 1 %', defval=1, minval=0.0, step=0.5, group='Take Profit', inline='Take Profit 1')
+
+
+
+/// Stop Loss
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+stoplossPercent = input.float(title='Stop Loss (%)', defval=2.0, minval=0.01, group='Stop Loss') * 0.01
+slLongClose = low < strategy.position_avg_price * (1 - stoplossPercent)
+slShortClose= high > strategy.position_avg_price * (1 + stoplossPercent)
+
+/// Leverage
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+leverage = input.float(1, 'Leverage', minval=0, step=1, group='Leverage')
+contracts = math.min(math.max(.000001, strategy.equity / close), 1000000000)
+
+
+
+//ATR close signal
+
+/// Trade State Management
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+isInLongPosition = strategy.position_size > 0
+isInShortPosition = strategy.position_size < 0
+
+
+
+/// Trade Execution
+// ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+longConditionCalc = (longCondition1 and isADXEnabledAndAboveThreshold)
+shortConditionCalc = (shortCondition1 and isADXEnabledAndAboveThreshold)
+
+if calcPeriod
+    if longConditionCalc and tradeDirection != 'Short Only' and isInLongPosition ==false
+        strategy.entry('Long', strategy.long, qty=contracts)
+
+
+    if shortConditionCalc and tradeDirection != 'Long Only' and isInShortPosition == false
+        strategy.entry('Short', strategy.short, qty=contracts)
+
+    
+//Inspired from Multiple %% profit exits example by adolgo https://www.tradingview.com/script/kHhCik9f-Multiple-profit-exits-example/
+strategy.exit('TP1', qty_percent=100, profit=per(tp1))
+
+strategy.close('Long', qty_percent=100, comment='SL Long', when=slLongClose)
+strategy.close('Short', qty_percent=100, comment='SL Short', when=slShortClose)
+
+
+
+if closeLongCondition
+    strategy.close_all(comment='close short')
+if closeShortCondition
+    strategy.close_all('close long')
+
+
+
+plotshape(shortConditionCalc, title='Short Entry', style=shape.triangledown, location=location.abovebar, color=color.new(#DC143C, 0), size=size.small)
+plotshape(longConditionCalc, title='Long Entry', style=shape.triangleup, location=location.belowbar, color=color.new(#228B22, 0), size=size.small)
